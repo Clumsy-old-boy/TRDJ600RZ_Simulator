@@ -1,0 +1,450 @@
+<a id="readme-top"></a>
+
+<!-- PROJECT SHIELDS -->
+[![License][license-shield]][license-url][![Platform][platform-shield]][platform-url][![Toolchain][toolchain-shield]][toolchain-url][![AI Assisted][ai-shield]][ai-url]
+
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+  <h3 align="center">TRD-J600-RZ Simulator - NUCLEO-G431KB</h3>
+
+  <p align="center">
+    Bench simulator of the TRD-J600-RZ (Koyo / JTEKT) incremental encoder for the
+    ELS controller: channels A, B and Z generated entirely in hardware on an
+    STM32G431KB, 600 pulses per revolution, 50-1600 rpm selected with an optical
+    knob.
+    <br />
+    <a href="#usage"><strong>See the API &raquo;</strong></a>
+    <br />
+    <br />
+    <a href="#getting-started">Getting Started</a>
+    &middot;
+    <a href="#known-issues--limitations">Known Issues</a>
+    &middot;
+    <a href="#roadmap">Roadmap</a>
+  </p>
+</div>
+
+<!-- TABLE OF CONTENTS -->
+<details>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+      <ul>
+        <li><a href="#built-with">Built With</a></li>
+        <li><a href="#build-status">Build Status</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#getting-started">Getting Started</a>
+      <ul>
+        <li><a href="#prerequisites">Prerequisites</a></li>
+        <li><a href="#installation--build-setup">Installation &amp; Build Setup</a></li>
+      </ul>
+    </li>
+    <li><a href="#usage">Usage</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#contributing">Contributing</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#contact">Contact</a></li>
+    <li><a href="#acknowledgments">Acknowledgments</a></li>
+  </ol>
+</details>
+
+<!-- ABOUT THE PROJECT -->
+## About The Project
+
+This project is a **bench simulator of the TRD-J600-RZ incremental encoder**,
+built on a **NUCLEO-G431KB** (STM32G431KBT6, Cortex-M4F at 170 MHz). It replaces
+the real encoder while the ELS controller is developed and tested: the board
+generates the three encoder channels (A, B, Z) with the same timing as a
+600 pulses/revolution sensor, and the simulated speed is selected with a knob
+instead of a motor.
+
+The three channels are produced **entirely in hardware**: no interrupt, no
+software timing and no jitter added by the firmware.
+
+- **A and B** (quadrature, 600 pulses/revolution) come from **TIM3**. Both
+  channels run in **Output Compare with toggle on match**: the output toggles
+  once per counter period, so the duty cycle is always 50 % and the compare
+  value only sets the phase. The two compare values are half a counter period
+  apart, that is a quarter of the waveform period, so the four transitions of A
+  and B are equally spaced.
+- **Z** (one pulse per revolution, active high) comes from **TIM2**, which is
+  **counted by the update events of TIM3** (External Clock Mode 1, trigger
+  ITR2) and therefore stays synchronous with A and B by construction. The pulse
+  is two events wide (one A/B period) and starts on the update event that
+  resets the TIM3 counter, that is **T/8 before the rising edge of A**.
+
+| Signal | MCU pin | Pad | Peripheral | Generation |
+|---|---|---|---|---|
+| A | PA6 | A5 (CN3 pin 7) | TIM3_CH1 | Output Compare toggle, 600 periods/revolution, 50 % duty |
+| B | PA4 | A3 (CN3 pin 9) | TIM3_CH2 | Output Compare toggle, compare value T/4 after A |
+| Z | PA0 | A0 (CN4 pin 4) | TIM2_CH1 | PWM1, one pulse/revolution, 2 TIM3 update events wide, active high |
+| - | PB0 | D3 (CN4 pin 6) | TIM3_CH3 | Configured by CubeMX but never enabled: generates no signal |
+| KNOB_A | PB6 | D6 (CN4 pin 9) | TIM4_CH1 | Command knob, 5 V input |
+| KNOB_B | PB7 | A4 (CN3 pin 8) | TIM4_CH2 | Command knob, 5 V input |
+| SWO | PB3 | D13 (CN4 pin 15) | - | `printf` trace to the ST-LINK, requires SB4 ON |
+
+The frequency of A and B is set by the prescaler and the auto-reload register of
+TIM3:
+
+```
+f_AB  = 170 MHz / (2 * (PSC + 1) * (ARR + 1))      [toggle on match]
+rpm   = f_AB / 10                                  [600 periods per revolution]
+```
+
+At 600 rpm this gives `ARR = 14166`, `PSC = 0`, `f_AB = 6 kHz`, `T_A = 166.7 us`
+and `CCR1 / CCR2 / CCR3 = 3541 / 10625 / 7083`. The prescaler is chosen
+automatically to keep ARR inside 16 bits: it grows below about 129.7 rpm, and at
+the bottom of the range (50 rpm) `ARR = 56666` with `PSC = 2`.
+
+The command knob is a **Bourns ENA1J-B28-L00100L** optical encoder: 100
+cycles/revolution, 5 V supply, read by **TIM4 in encoder mode TI1/TI2** on PB6
+and PB7 with 400 increments per revolution in x4 decoding. The module keeps a
+**signed position from -16800 to +16800**: the sign selects the direction and
+the magnitude the speed, so three knob turns cover the whole 50-1600 rpm range.
+The position is applied to the generator at most every **50 ms**, and every
+application resets the TIM3 counter.
+
+> [!WARNING]
+> Bench instrument, not a product. The signals are generated by a
+> microcontroller and are electrically compatible with the controller inputs,
+> but the timing is not the timing of the real sensor: use this board to
+> develop and debug the controller, not to qualify it.
+> <br>
+> 5 V signals may reach PB6 and PB7 only; PA0, PA4, PA6 and PB0 accept 3.3 V
+> levels and have an absolute maximum of 4.0 V.
+> <br>
+> This project was developed with the support of artificial intelligence
+> tools:
+> <br> - see [Known Issues & Limitations](#known-issues--limitations).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Built With
+
+* [STM32Cube HAL](https://www.st.com/en/embedded-software/stm32cubeg4.html) - ST hardware abstraction layer
+* [Keil MDK / uVision 5](https://www.keil.com/mdk5) - Arm Compiler 6 (AC6)
+* [STM32CubeMX](https://www.st.com/en/development-tools/stm32cubemx.html) - clock and peripheral configuration (`.ioc`)
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Build Status
+
+The latest build of the project is **verified**: compiled with Keil uVision
+5.43.1.0 (MDK-ARM 5.43a), ArmClang V6.24 (AC6), device pack
+Keil.STM32G4xx_DFP 2.2.0, **0 Error(s), 0 Warning(s)**.
+
+The signal chain has been verified at register level, not only on the source:
+`TIM3->CR2` shows the master output trigger set to **Update** (the event that
+clocks TIM2) and the three low bits of `TIM2->SMCR` are **111**, that is
+**External Clock Mode 1** with ITR2 selected. The Z pulse exists only if both
+conditions hold.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- GETTING STARTED -->
+## Getting Started
+
+Instructions to compile and flash the project on a NUCLEO-G431KB board, and to
+verify the generated signals on the bench.
+
+### Prerequisites
+
+* **Keil uVision 5** with the **STM32G4xx_DFP** device pack installed (via Pack Installer)
+* **ST-LINK** (built into the NUCLEO-G431KB) and the corresponding USB drivers
+* A **logic analyzer with at least 8 channels** (or an oscilloscope) for the signal verification
+* The **command knob** (Bourns ENA1J-B28-L00100L) with 5 V supply and common ground
+* The **ELS controller** (NUCLEO-G474RE) as the load of the simulated encoder
+
+| Component | Detail |
+|---|---|
+| Board | NUCLEO-G431KB |
+| MCU | STM32G431KBT6 (LQFP32) - Cortex-M4F @ 170 MHz, 128 KB Flash, 32 KB RAM |
+| Encoder channels | A = PA6, B = PA4, Z = PA0 |
+| Knob inputs | KNOB_A = PB6, KNOB_B = PB7 (5 V tolerant) |
+| Debug | PB3 = SWO (jumper SB4 ON), PB8 = `printf` anchor output |
+| Jumpers | SB2 = ON and SB3 = ON are the adopted configuration; SB6 OFF / SB7 ON for the LED on PB8 |
+
+PB8 is also the user LED in the default board configuration (SB7 ON), so the
+`printf` anchor pulse is visible on LD2 at the print rate.
+
+### Installation & Build Setup
+
+The repository keeps the STM32Cube HAL, the CMSIS headers and the board support
+files under version control: a fresh clone builds immediately, and regenerating
+the code with CubeMX is only needed after a change to the `.ioc` file.
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Clumsy-old-boy/TRDJ600RZ_Simulator.git
+   cd TRDJ600RZ_Simulator
+   ```
+
+2. **Recreate the HAL drivers via STM32CubeMX (only if the `.ioc` changed):**
+   * Open **STM32CubeMX**.
+   * Click on **File -> Open Project** and select `TRDJ600RZ_Simulator.ioc` from the project root folder.
+   * Without changing any hardware setting, click the **GENERATE CODE** button in the top right corner.
+   * *This rewrites `Drivers/CMSIS/` and `Drivers/STM32G4xx_HAL_Driver/` and reorganizes `Core/`; the user sections of `main.c` (initialization calls and the main loop) are preserved.*
+
+3. **Compile and Flash via Keil uVision:**
+   * Navigate to the `MDK-ARM/` directory and open `TRDJ600RZ_Simulator.uvprojx`.
+   * Perform a full rebuild by pressing **F7** (or clicking *Project -> Rebuild all target files*).
+   * Connect the **NUCLEO-G431KB** board via USB.
+   * Press **F8** (or click *Flash -> Download*) to flash the firmware onto the MCU.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- USAGE EXAMPLES -->
+## Usage
+
+Minimal API to drive the simulator from `main.c`. The two initialization calls
+must come after the CubeMX initialization functions:
+
+```c
+SpindleSim_Init();                  // A, B and Z geometry; both timers left stopped
+KnobInput_Init();                   // enables the TIM4 counter, position = 0
+
+(void)SpindleSim_MeasureRpm();      // call on every main-loop pass, see the note below
+(void)KnobInput_Poll();             // knob displacement -> speed and direction
+
+SpindleSim_SetRpm(600.0f);          // clamped between 50 and 1600 rpm; false on NaN
+SpindleSim_SetDirection(true);      // reverse: swaps the compare values, effective at runtime
+SpindleSim_Start();                 // enables A and B and arms Z on the first edge of B
+SpindleSim_Stop();                  // disables the outputs and clears the counters
+
+uint32_t f = SpindleSim_GetPwmHz();     // 6000 at 600 rpm
+float    s = SpindleSim_GetRpm();       // programmed speed, from the registers
+float    m = SpindleSim_MeasureRpm();   // measured speed, -1.0f when stopped
+bool     run = SpindleSim_IsRunning();  // true while the rotation is in progress
+```
+
+`SpindleSim_MeasureRpm()` works by observing the TIM3 counter, not the
+configuration registers: it must be called cyclically and more often than once
+per half period of A/B (about 4.2 us at the top of the range), otherwise the
+estimate reads lower than the real speed. It returns -1.0f when the rotation is
+stopped.
+
+`Core/Src/main.c` contains the complete application loop: the measurement call,
+the knob poll and a 250 ms `printf` line with the programmed speed, the measured
+speed, the A/B frequency, the TIM3 registers and the knob position.
+
+### Signal Verification Modes
+
+`Z_SIGNAL_MODE` in `Drivers/Spindle_sim/SpindleSim.h` selects where the
+requested speed comes from. It is a build-time switch: in modes 1 and 2 the
+signal chain is unchanged (TIM3 still generates A and B, TIM2 still produces Z),
+only the speed source changes, so the verification measures the real signal.
+
+| `Z_SIGNAL_MODE` | Speed source | Notes |
+|---|---|---|
+| **0** | Command knob (TIM4) | Production value: the test code is not compiled |
+| 1 | Fixed `Z_SIGNAL_RPM` = 1600 rpm | Round numbers: `f_A` = 16 kHz, `T_A` = 62.5 us, `T_Z` = 37.5 ms |
+| 2 | Automatic scale | 5 s per step: 50, 153.3, 300, 600, 900, 1200, 1600 rpm |
+
+With mode 1 or 2 the knob does not command: `SpindleSim_TestTask()` is called
+once before the main loop. Remember to set `Z_SIGNAL_MODE` back to 0 when the
+verification is finished.
+
+Expected values on the generator:
+
+| | 50 rpm | 600 rpm | 1600 rpm |
+|---|---|---|---|
+| A and B frequency | 500 Hz | 6 000 Hz | 16 000 Hz |
+| A and B period `T_A` | 2 000 us | 166.7 us | 62.5 us |
+| Delay A -> B (T/4) | 500 us | 41.7 us | 15.6 us |
+| Z period `T_Z` (600 `T_A`) | 1 200 ms | 100 ms | 37.5 ms |
+| Z pulse width (1 `T_A`, active high) | 2 000 us | 166.7 us | 62.5 us |
+| Z rising edge before A rising edge (T/8) | 250 us | 20.8 us | 7.8 us |
+
+### Debug / logging (`printf`)
+
+Debug output via `printf` is routed over **ITM/SWO** by
+`Drivers/Utils/retarget_io.c`, a standalone replacement of the Keil
+`Compiler::I/O` software component: the routing is fixed by the `IO_STDxxx_ENABLE`
+macros in that file (stdin, stdout, stderr, tty), so it does not depend on the
+Run-Time Environment selection. To see it you need the ST-LINK debugger
+connected and the **Debug (printf) Viewer** window open, with the ITM stimulus
+port **0** enabled and the **Core Clock set to 170 MHz** in the trace settings
+(`Debug -> Settings -> Trace`, Trace Enable and ITM Port 0 checked). Without a
+debugger the ITM is off, `ITM_SendChar()` returns immediately and nothing is
+printed: this is the expected behaviour.
+
+The same signals are available on the pins for the analyzer, so the ITM trace is
+only a convenience. A print line blocks the main loop for hundreds of
+microseconds while the ITM FIFO drains: in `main.c` it is rate-limited to 250 ms
+and bracketed by a pulse on PB8, which marks on the analyzer exactly how long
+the loop was stopped.
+
+### Repository Structure
+
+```
+Core/
+  Inc/main.h                     Pin labels, ENCODER_Z_Pin (PA0), USART2 pins
+  Src/main.c                     Clock, MX_TIM2/TIM3/TIM4_Init(), MX_GPIO_Init(), main loop
+  Src/stm32g4xx_hal_msp.c        Low-level peripheral init (GPIO alternate functions, clocks)
+  Src/stm32g4xx_it.c             Cortex-M and peripheral interrupt vectors
+  Src/system_stm32g4xx.c         CMSIS system initialization
+Drivers/
+  Spindle_sim/SpindleSim.c/.h    A and B on TIM3, Z index on TIM2, speed model
+  Knob_input/KnobInput.c/.h      Knob on TIM4: position, direction, 50 ms rate limit
+  Utils/retarget_io.c            printf retarget to ITM/SWO (standalone, not RTE)
+  BSP/STM32G4xx_Nucleo/          Board support (LED, buttons, virtual COM port)
+  CMSIS/                         Cortex-M headers and STM32G4 device headers
+  STM32G4xx_HAL_Driver/          STM32Cube HAL for the STM32G4 series
+MDK-ARM/
+  TRDJ600RZ_Simulator.uvprojx    Keil uVision project (ArmClang AC6)
+  startup_stm32g431xx.s          Startup code and vector table
+TRDJ600RZ_Simulator.ioc          CubeMX configuration (clock, TIM2/TIM3/TIM4, GPIO)
+SETUP-BANCO-TRDJ600RZ.md         Bench setup sheet (wiring, analyzer, diagnostics)
+TRDJ600RZ_Test_Checklist.md      Bench verification checklist
+.gitignore                       Version control rules
+```
+
+Build artifacts and local settings are deliberately not tracked: the whole
+`MDK-ARM/TRDJ600RZ_Simulator/` output directory (object files, `.axf`, `.hex`,
+`.map`, build logs), the scatter file `*.sct`, the `*.uvoptx` and `*.uvguix.*`
+IDE files, `*.bak` backups, `*.scvd`, `.vscode/` and `_scratch/`. The sources in
+`Core/` and `Drivers/`, the Keil project, the CubeMX configuration and the
+documentation in Markdown and PDF are tracked.
+
+### Memory Footprint
+
+Latest measured production build (`Z_SIGNAL_MODE = 0`), Keil `Program Size`:
+
+| Resource | Used | Total | % used |
+|---|---|---|---|
+| Flash | 15884 B | 131072 B (128 KB) | ~12.1% |
+| RAM | 2208 B | 32768 B (32 KB) | ~6.7% |
+
+Measured components: `Code = 15306`, `RO-data = 554`, `RW-data = 24`,
+`ZI-data = 2184`. Flash used is `Code + RO-data + RW-data` and RAM used is
+`RW-data + ZI-data`.
+
+With the verification scale compiled in (`Z_SIGNAL_MODE = 2`) the build grows to
+`Code = 15438` and `ZI-data = 2192`, that is 16016 B of Flash and 2216 B of RAM.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- ROADMAP -->
+## Roadmap
+
+<!-- TODO: the items below are derived from the open points found in the sources
+     and in the bench documents; confirm them with the maintainer -->
+
+- [x] Hardware generation of A and B on TIM3 (600 pulses/revolution, 50 % duty, T/4 phase shift)
+- [x] Z index on TIM2 in External Clock Mode 1 (one pulse/revolution, active high, T/8 before A)
+- [x] Command knob with signed position (+/-16800) and 50 ms rate limit
+- [x] Build-time verification modes (`Z_SIGNAL_MODE` = 1 and 2)
+- [x] Bench verification with a logic analyzer: `T_Z / T_A` = 599.98 over 128 revolutions at 1600 rpm
+- [ ] Definition of the Z index input pin on the ELS controller side (currently to be defined)
+- [ ] Bench setup sheet and checklist moved under `docs/` and linked from this README
+- [ ] Comparison against a real TRD-J600-RZ at the top of the range (the real sensor is specified up to 30 kHz of response, the simulator stops at 16 kHz)
+- [ ] Optional UART debug output as an alternative to ITM/SWO
+
+See the [open issues](../../issues) for the full list of proposed features (and
+known problems).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- CONTRIBUTING -->
+## Contributing
+
+Contributions are welcome.
+
+1. Fork the project
+2. Create your branch (`git checkout -b feature/NewFeature`)
+3. Commit your changes (`git commit -m 'Add NewFeature'`)
+4. Push the branch (`git push origin feature/NewFeature`)
+5. Open a Pull Request
+
+### Known Issues & Limitations
+
+- **AI-Assisted Engineering:** the firmware and this documentation were
+  developed with the support of artificial intelligence tools. Every change was
+  reviewed and verified on the bench with a logic analyzer.
+  <!-- TODO: name the AI models/tools actually used -->
+- **The simulator is an instrument, not a closed loop:** nothing verifies that
+  the ELS controller decoded A, B and Z correctly. The measurements are taken on
+  the generated signals.
+- **Z is derived, not measured:** the index is obtained from the TIM3 update
+  events, so it is synchronous with A and B by construction, while a real
+  encoder has its own opto-mechanical alignment between the index and the
+  quadrature channels.
+- **Phase jump at every knob application:** each speed application resets the
+  TIM3 counter, so while the knob rotates the phase of A and B is not continuous
+  between two captures. This is expected and is the effect of the 50 ms rate
+  limit.
+- **First revolution after a restart:** the TIM2 counter restarts from the
+  parking value (2, not 0), so the first revolution after every restart is 2
+  steps out of 1200 shorter, about 167 us at 600 rpm.
+- **`printf` disturbs the measurement:** while the ITM line drains, the loop
+  does not call `SpindleSim_MeasureRpm()`, so the measured speed reads about
+  0.2-0.4 % less than the programmed one. The pulse width on PB8 is that
+  blocking time.
+- **Shared pads and 5 V levels:** with SB2 = ON and SB3 = ON, PA5 and PA15 must
+  stay in the reset state (floating analog input) because they sit on the same
+  node as PB7 and PA6. The 5 V knob signals may reach PB6 and PB7 only; PA0,
+  PA4, PA6 and PB0 are not 5 V tolerant (absolute maximum 4.0 V).
+- **First captured pulse:** the first Z pulse after the analyzer is armed can
+  read truncated; it is a capture-start artifact, not a firmware defect.
+- **Speed accuracy:** limited by the internal HSI oscillator feeding the PLL,
+  with about 0.03 % of offset between the nominal and the measured speed.
+
+### Bench Verification Results
+
+The signal chain was verified with a logic analyzer (Kingst LA1010, 1.4 V
+threshold for 3.3 V logic, 10 MS/s, trigger on the Z rising edge):
+
+| Speed | Capture | Revolutions | `T_Z / T_A` | Z pulse / `T_A` | Z to A phase |
+|---|---|---|---|---|---|
+| 50 rpm | 50 s | 40 | 600 | 1.0001 | 250.125 us (expected 250.010) |
+| 600 rpm | 1.8 s | 20 | 599.88 | 1.00 | 20.96 us (expected 20.83) |
+| 1600 rpm | 5 s | **128** | **599.98** | **1.0000** | 7.800 us (expected 7.814) |
+
+No drift was observed over the 128 revolutions at 1600 rpm, and all the measured
+speeds stay within +/-0.03 % of the nominal value.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- LICENSE -->
+## License
+
+Distributed under the **MIT** license. See [`LICENSE`](LICENSE) for the full text.
+
+<!-- TODO: add the LICENSE file at the repository root (MIT, Copyright (c) 2026 Clumsy-old-boy) -->
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- CONTACT -->
+## Contact
+
+Project Link: [https://github.com/Clumsy-old-boy/TRDJ600RZ_Simulator](https://github.com/Clumsy-old-boy/TRDJ600RZ_Simulator)
+
+<!-- TODO: confirm the repository name: every link in this README assumes TRDJ600RZ_Simulator -->
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- ACKNOWLEDGMENTS -->
+## Acknowledgments
+
+* [STMicroelectronics - STM32G4 Series](https://www.st.com/en/microcontrollers-microprocessors/stm32g4-series.html)
+* Bourns - EN series optical encoder, the command knob of this project (ENA1J-B28-L00100L)
+* Documentation of the TRD-J600-RZ encoder in use (verify the actual supplier and revision)
+* [Best-README-Template](https://github.com/othneildrew/Best-README-Template) - structure of this README
+* This project was developed with the support of artificial intelligence tools; every change was reviewed and validated on the bench.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- MARKDOWN LINKS & IMAGES -->
+
+[license-shield]: https://img.shields.io/badge/license-MIT-yellow.svg?style=for-the-badge
+[license-url]: LICENSE
+[platform-shield]: https://img.shields.io/badge/MCU-STM32G431KB-03234B?style=for-the-badge
+[platform-url]: https://www.st.com/en/microcontrollers-microprocessors/stm32g431kb.html
+[toolchain-shield]: https://img.shields.io/badge/toolchain-Keil%20MDK%20(AC6)-orange?style=for-the-badge
+[toolchain-url]: https://www.keil.com/mdk5
+[ai-shield]: https://img.shields.io/badge/AI_Assisted-firmware_development-blue?style=for-the-badge
+[ai-url]: #known-issues--limitations
